@@ -1,0 +1,65 @@
+pipeline {
+    agent any
+
+    parameters {
+        string(name: 'IMAGE_NAME', description: 'Docker image (e.g., repo/app:tag)')
+        string(name: 'K8S_NAMESPACE', defaultValue: 'default', description: 'Kubernetes namespace')
+        string(name: 'DEPLOYMENT_NAME', description: 'K8s Deployment name')
+        string(name: 'CONTAINER_NAME', description: 'Container name inside deployment')
+    }
+
+    environment {
+        KUBECONFIG = credentials('kubeconfig') // Jenkins credentials(file type)
+    }
+
+    stages {
+
+        stage('Validate Input') {
+            steps {
+                script {
+                    if (!params.IMAGE_NAME || !params.DEPLOYMENT_NAME || !params.CONTAINER_NAME) {
+                        error "Missing required parameters!"
+                    }
+                }
+            }
+        }
+
+        stage('Check Cluster Access') {
+            steps {
+                sh "kubectl --kubeconfig=$KUBECONFIG get nodes"
+            }
+        }
+
+        stage('Deploy to Kubernetes') {
+            steps {
+                sh """
+                kubectl --kubeconfig=$KUBECONFIG set image deployment/${DEPLOYMENT_NAME} \
+                ${CONTAINER_NAME}=${IMAGE_NAME} \
+                -n ${K8S_NAMESPACE} --record
+                """
+            }
+        }
+
+        stage('Verify Rollout') {
+            steps {
+                sh """
+                kubectl --kubeconfig=$KUBECONFIG rollout status deployment/${DEPLOYMENT_NAME} \
+                -n ${K8S_NAMESPACE}
+                """
+            }
+        }
+    }
+
+    post {
+        success {
+            echo "Deployment successful: ${params.IMAGE_NAME}"
+        }
+        failure {
+            echo "Deployment failed! Rolling back..."
+            sh """
+            kubectl --kubeconfig=$KUBECONFIG rollout undo deployment/${DEPLOYMENT_NAME} \
+            -n ${K8S_NAMESPACE}
+            """
+        }
+    }
+}

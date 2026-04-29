@@ -1,0 +1,113 @@
+pipeline {
+    agent any
+
+    tools {
+        maven 'Maven3'
+    }
+
+    environment {
+        APP_NAME = "spring-boot-app"
+        BUILD_VERSION = "${env.BUILD_NUMBER}"
+        IMAGE_NAME = "sidd-docker-repo/${APP_NAME}:${BUILD_VERSION}"
+    }
+
+    stages {
+
+        stage('Checkout') {
+            steps {
+                git url: 'https://github.com/Helmet1002/springboot-cicd-demo.git', branch: 'main'
+            }
+        }
+
+        stage('Build') {
+            steps {
+                sh 'mvn clean compile'
+            }
+        }
+
+        stage('Unit Tests') {
+            steps {
+                sh 'mvn test'
+            }
+        }
+
+        stage('Package JAR') {
+            steps {
+                sh "mvn package -DskipTests -DBUILD_VERSION=${BUILD_VERSION}"
+            }
+        }
+
+        stage('Archive Artifact') {
+            steps {
+                archiveArtifacts artifacts: 'target/*.jar', fingerprint: true
+            }
+        }
+        stage('Security Scan - Dependencies') {
+            steps {
+                sh '''
+                mvn org.owasp:dependency-check-maven:check \
+                -DfailBuildOnCVSS=7
+                '''
+            }
+        }
+
+        stage('Build Docker Image') {
+            steps {
+                sh "docker build -t ${IMAGE_NAME} ."
+            }
+        }
+        /*
+        Security Scanning:
+        - Dependency scanning is implemented using OWASP Dependency-Check.
+        - Container image scanning is implemented using Trivy.
+        - Additionally, enterprise tools like Veracode can be integrated as a separate stage:
+          - Upload build artifact (JAR) to Veracode
+          - Perform static/dynamic analysis
+          - Fail pipeline based on policy violations
+
+        Deployment:
+        - For AWS:
+          - Push Docker image to Amazon ECR
+          - Deploy using ECS/EKS or EC2 (via SSH or user-data scripts)
+
+        - For On-Prem:
+          - Push image to private registry (e.g., Nexus/Harbor)
+          - Deploy using Kubernetes (kubectl/Helm) or Docker Compose
+        */
+        stage('Security Scan - Image') {
+            steps {
+                sh '''
+                trivy image --format table \
+                --severity HIGH,CRITICAL \
+                --exit-code 1 \
+                ${IMAGE_NAME}
+                '''
+            }
+        }
+
+        stage('Push Docker Image') {
+            steps {
+                withCredentials([usernamePassword(
+                    credentialsId: 'dockerhub-creds',
+                    usernameVariable: 'DOCKER_USER',
+                    passwordVariable: 'DOCKER_PASS'
+                )]) {
+                    sh """
+                    echo $DOCKER_PASS | docker login -u $DOCKER_USER --password-stdin
+                   docker tag ${IMAGE_NAME} sidd-docker-repo/${APP_NAME}:latest
+                   docker push sidd-docker-repo/${APP_NAME}:latest
+                    """
+                }
+            }
+        }
+    }
+
+    post {
+        success {
+            echo "Build successful! Image pushed: ${IMAGE_NAME}"
+        }
+        failure {
+            echo "Build failed!"
+        }
+    }
+}

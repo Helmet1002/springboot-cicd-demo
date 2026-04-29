@@ -1,0 +1,4 @@
+app:
+  name: demo
+  description: Health check service
+  custom-value: from-config-file
